@@ -1,0 +1,13 @@
+python-telegram-bot==20.7
+pyTelegramBotAPI==4.21.0
+yt-dlp==2025.11.12
+telebot
+instaloader
+pydub
+requests
+shazamio
+beautifulsoup4
+lxml
+
+
+
