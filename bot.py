@@ -3,7 +3,6 @@
 """
 Telegram Music Bot - Linux Optimized (Python 3.11+)
 Instagram, TikTok, Shazam, YouTube Music Search
-Fast & Concurrent Version with Process Pool
 """
 
 import sys
@@ -19,7 +18,7 @@ import logging
 from importlib.metadata import version
 from pathlib import Path
 from typing import Optional, Dict, List, Any
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import multiprocessing
 
@@ -42,7 +41,6 @@ import yt_dlp
 # Async HTTP
 import aiohttp
 import aiofiles
-import aiofiles.os
 
 # ==================== LOGGING ====================
 logging.basicConfig(
@@ -66,12 +64,13 @@ TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit
 CLEANUP_INTERVAL = 300  # 5 minutes
-MAX_WORKERS = min(psutil.cpu_count() * 2, 16)  # Max 16 thread
+MAX_WORKERS = min(psutil.cpu_count() * 2, 16)
 
 # ==================== GLOBAL STATE ====================
 user_sessions: Dict[int, Dict] = {}
 thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 http_session: Optional[aiohttp.ClientSession] = None
+bot: Optional[AsyncTeleBot] = None
 
 # ==================== ASYNC BOT INITIALIZATION ====================
 async def init_bot() -> AsyncTeleBot:
@@ -100,7 +99,7 @@ async def init_bot() -> AsyncTeleBot:
         timeout=aiohttp.ClientTimeout(total=60)
     )
     
-    # Async bot yaratish - skip_pending O'CHIRILDI
+    # Async bot yaratish
     bot = AsyncTeleBot(BOT_TOKEN, parse_mode=None)
     
     return bot
@@ -228,11 +227,9 @@ async def recognize_audio_async(audio_bytes: bytes) -> Dict:
         temp_hash = hashlib.md5(audio_bytes[:100]).hexdigest()
         temp_path = TEMP_DIR / f"shazam_{temp_hash}.mp3"
         
-        # Async fayl yozish
         async with aiofiles.open(temp_path, 'wb') as f:
             await f.write(audio_bytes)
         
-        # Shazam aniqlash
         shazam = Shazam()
         result = await shazam.recognize(str(temp_path))
         
@@ -261,14 +258,12 @@ async def download_youtube_audio_async(query: str, filename_hint: str = "") -> O
         
         options = {**AUDIO_OPTIONS, 'outtmpl': output_template}
         
-        # Thread poolda yuklash
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             thread_pool,
             partial(_sync_download, options, f"ytsearch1:{query}")
         )
         
-        # Yuklangan faylni topish
         mp3_files = sorted(
             TEMP_DIR.glob('audio_*.mp3'),
             key=lambda f: f.stat().st_mtime,
@@ -290,6 +285,25 @@ def _sync_download(options: dict, url: str) -> None:
             ydl.download([url])
     except Exception as e:
         logger.error(f"Sync download xatosi: {e}")
+
+def _sync_download_with_info(options: dict, url: str) -> Optional[Dict]:
+    """Sync yuklash info bilan"""
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=True)
+    except Exception as e:
+        logger.error(f"Download info xatosi: {e}")
+        return None
+
+def _sync_search(query: str) -> List[Dict]:
+    """Sync qidirish"""
+    try:
+        with yt_dlp.YoutubeDL(SEARCH_OPTIONS) as ydl:
+            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
+            return info.get('entries', [])
+    except Exception as e:
+        logger.error(f"Search xatosi: {e}")
+        return []
 
 async def extract_audio_from_video_async(video_path: str | Path, duration: int = 10) -> Optional[Path]:
     """Async videodan audio ajratish (FFmpeg)"""
@@ -333,6 +347,11 @@ async def extract_audio_from_video_async(video_path: str | Path, duration: int =
     
     return None
 
+async def delayed_delete_async(filepath: Path, delay: int) -> None:
+    """Async kechiktirilgan o'chirish"""
+    await asyncio.sleep(delay)
+    await safe_delete(filepath)
+
 # ==================== MESSAGE HANDLERS ====================
 async def start_command(message: types.Message) -> None:
     """Start komandasi"""
@@ -355,7 +374,6 @@ async def start_command(message: types.Message) -> None:
     except:
         await bot.send_message(message.chat.id, welcome_text.replace('*', ''))
 
-# ==================== AUDIO/VOICE HANDLER ====================
 async def handle_audio_message(message: types.Message) -> None:
     """Audio/Voice aniqlash va yuklash"""
     status_msg = None
@@ -364,14 +382,11 @@ async def handle_audio_message(message: types.Message) -> None:
     try:
         status_msg = await bot.reply_to(message, "🎵 Musiqa aniqlanmoqda...")
         
-        # File ID olish
         file_id = message.audio.file_id if message.audio else message.voice.file_id
         
-        # File yuklash
         file_info = await bot.get_file(file_id)
         audio_data = await bot.download_file(file_info.file_path)
         
-        # Shazam aniqlash
         logger.info("Shazam aniqlash boshlandi...")
         result = await recognize_audio_async(audio_data)
         
@@ -392,7 +407,6 @@ async def handle_audio_message(message: types.Message) -> None:
             status_msg.message_id
         )
         
-        # Audio yuklash
         query = f"{artist} {title}"
         audio_file_path = await download_youtube_audio_async(query, f"{artist}_{title}")
         
@@ -432,7 +446,6 @@ async def handle_audio_message(message: types.Message) -> None:
     finally:
         await safe_delete(audio_file_path)
 
-# ==================== INSTAGRAM HANDLER ====================
 async def handle_instagram(message: types.Message) -> None:
     """Instagram video yuklash"""
     status_msg = None
@@ -444,7 +457,6 @@ async def handle_instagram(message: types.Message) -> None:
         
         logger.info(f"Instagram URL: {url}")
         
-        # Thread poolda yuklash
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(
             thread_pool,
@@ -461,7 +473,6 @@ async def handle_instagram(message: types.Message) -> None:
         
         video_id = info.get('id', 'video')
         
-        # Video topish
         video_files = list(TEMP_DIR.glob(f"ig_{video_id}*"))
         if not video_files:
             video_files = sorted(
@@ -480,7 +491,6 @@ async def handle_instagram(message: types.Message) -> None:
         
         video_path = video_files[0]
         
-        # Hajmni tekshirish
         file_size = video_path.stat().st_size
         if file_size > MAX_FILE_SIZE:
             size_mb = file_size / (1024 * 1024)
@@ -491,7 +501,6 @@ async def handle_instagram(message: types.Message) -> None:
             )
             return
         
-        # Inline tugma
         btn_hash = create_hash(str(video_path))
         markup = types.InlineKeyboardMarkup()
         markup.add(
@@ -501,7 +510,6 @@ async def handle_instagram(message: types.Message) -> None:
             )
         )
         
-        # Video yuborish
         async with aiofiles.open(video_path, 'rb') as video_file:
             video_bytes = await video_file.read()
         
@@ -513,7 +521,6 @@ async def handle_instagram(message: types.Message) -> None:
             supports_streaming=True
         )
         
-        # Session saqlash
         async with aiofiles.open(TEMP_DIR / f"{btn_hash}.path", 'w') as f:
             await f.write(str(video_path))
         
@@ -536,21 +543,6 @@ async def handle_instagram(message: types.Message) -> None:
         if video_path:
             asyncio.create_task(delayed_delete_async(video_path, 60))
 
-def _sync_download_with_info(options: dict, url: str) -> Optional[Dict]:
-    """Sync yuklash info bilan"""
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            return ydl.extract_info(url, download=True)
-    except Exception as e:
-        logger.error(f"Download info xatosi: {e}")
-        return None
-
-async def delayed_delete_async(filepath: Path, delay: int) -> None:
-    """Async kechiktirilgan o'chirish"""
-    await asyncio.sleep(delay)
-    await safe_delete(filepath)
-
-# ==================== TIKTOK HANDLER ====================
 async def handle_tiktok(message: types.Message) -> None:
     """TikTok video yuklash"""
     status_msg = None
@@ -560,7 +552,6 @@ async def handle_tiktok(message: types.Message) -> None:
         url = message.text.strip()
         status_msg = await bot.reply_to(message, "📱 TikTok yuklanmoqda...")
         
-        # Thread poolda yuklash
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(
             thread_pool,
@@ -594,7 +585,6 @@ async def handle_tiktok(message: types.Message) -> None:
         
         video_path = video_files[0]
         
-        # Hajm tekshirish
         file_size = video_path.stat().st_size
         if file_size > MAX_FILE_SIZE:
             size_mb = file_size / (1024 * 1024)
@@ -605,7 +595,6 @@ async def handle_tiktok(message: types.Message) -> None:
             )
             return
         
-        # Inline tugma
         btn_hash = create_hash(str(video_path))
         markup = types.InlineKeyboardMarkup()
         markup.add(
@@ -615,7 +604,6 @@ async def handle_tiktok(message: types.Message) -> None:
             )
         )
         
-        # Video yuborish
         async with aiofiles.open(video_path, 'rb') as f:
             video_bytes = await f.read()
         
@@ -648,7 +636,6 @@ async def handle_tiktok(message: types.Message) -> None:
         if video_path:
             asyncio.create_task(delayed_delete_async(video_path, 60))
 
-# ==================== VIDEO MUSIC RECOGNITION ====================
 async def handle_video_music_recognition(call: types.CallbackQuery) -> None:
     """Videodan musiqa aniqlash"""
     audio_path = None
@@ -659,7 +646,6 @@ async def handle_video_music_recognition(call: types.CallbackQuery) -> None:
         btn_hash = call.data.split('_')[1]
         await bot.answer_callback_query(call.id, "🎵 Musiqa aniqlanmoqda...")
         
-        # Video path olish
         path_file = TEMP_DIR / f"{btn_hash}.path"
         if not path_file.exists():
             await bot.send_message(call.message.chat.id, "❌ Video topilmadi")
@@ -672,14 +658,12 @@ async def handle_video_music_recognition(call: types.CallbackQuery) -> None:
             await bot.send_message(call.message.chat.id, "❌ Video fayl o'chirilgan")
             return
         
-        # Audio ajratish
         audio_path = await extract_audio_from_video_async(video_path_str, 10)
         
         if not audio_path:
             await bot.send_message(call.message.chat.id, "❌ Audio ajratilmadi")
             return
         
-        # Shazam aniqlash
         async with aiofiles.open(audio_path, 'rb') as f:
             audio_data = await f.read()
         
@@ -697,7 +681,6 @@ async def handle_video_music_recognition(call: types.CallbackQuery) -> None:
             f"✅ Topildi: {title} - {artist}\n⏳ Yuklanmoqda..."
         )
         
-        # Audio yuklash
         query = f"{artist} {title}"
         audio_file_path = await download_youtube_audio_async(query, f"{artist}_{title}")
         
@@ -731,7 +714,6 @@ async def handle_video_music_recognition(call: types.CallbackQuery) -> None:
         await safe_delete(video_path_str)
         await safe_delete(path_file)
 
-# ==================== SEARCH HANDLER ====================
 async def handle_search(message: types.Message) -> None:
     """Qidiruv handler"""
     status_msg = None
@@ -740,7 +722,6 @@ async def handle_search(message: types.Message) -> None:
         query = message.text.strip()
         status_msg = await bot.reply_to(message, f"🔍 '{query}' qidirilmoqda...")
         
-        # Thread poolda qidirish
         loop = asyncio.get_event_loop()
         songs = await loop.run_in_executor(
             thread_pool,
@@ -755,7 +736,6 @@ async def handle_search(message: types.Message) -> None:
             )
             return
         
-        # Session saqlash
         user_sessions[message.chat.id] = {
             'query': query,
             'songs': songs,
@@ -763,7 +743,6 @@ async def handle_search(message: types.Message) -> None:
             'timestamp': datetime.now()
         }
         
-        # Birinchi sahifani ko'rsatish
         await show_search_results(message.chat.id, 0)
         await bot.delete_message(message.chat.id, status_msg.message_id)
     
@@ -778,16 +757,6 @@ async def handle_search(message: types.Message) -> None:
                 )
             except:
                 pass
-
-def _sync_search(query: str) -> List[Dict]:
-    """Sync qidirish"""
-    try:
-        with yt_dlp.YoutubeDL(SEARCH_OPTIONS) as ydl:
-            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
-            return info.get('entries', [])
-    except Exception as e:
-        logger.error(f"Search xatosi: {e}")
-        return []
 
 async def show_search_results(chat_id: int, page: int = 0) -> None:
     """Qidiruv natijalarini ko'rsatish"""
@@ -806,7 +775,6 @@ async def show_search_results(chat_id: int, page: int = 0) -> None:
     end_idx = min(start_idx + page_size, total_songs)
     page_songs = songs[start_idx:end_idx]
     
-    # Matnni yaratish
     text_lines = [
         f"🔍 *{session['query']}*",
         f"📄 Sahifa: {page + 1}/{total_pages} | Jami: {total_songs} ta",
@@ -814,8 +782,6 @@ async def show_search_results(chat_id: int, page: int = 0) -> None:
     ]
     
     markup = types.InlineKeyboardMarkup(row_width=5)
-    
-    # Tugmalar yaratish
     button_rows = []
     current_row = []
     
@@ -830,7 +796,6 @@ async def show_search_results(chat_id: int, page: int = 0) -> None:
         if url:
             h = create_hash(f"{url}_{global_idx}")
             
-            # Faylga yozish
             try:
                 (TEMP_DIR / f"song_{h}.txt").write_text(f"{url}|{title}|{global_idx}")
             except:
@@ -849,7 +814,6 @@ async def show_search_results(chat_id: int, page: int = 0) -> None:
     for row in button_rows:
         markup.add(*row)
     
-    # Navigation tugmalari
     nav_buttons = []
     if page > 0:
         nav_buttons.append(types.InlineKeyboardButton("⬅️ Oldingi", callback_data=f"page_{page-1}"))
@@ -881,7 +845,6 @@ async def show_search_results(chat_id: int, page: int = 0) -> None:
             reply_markup=markup
         )
 
-# ==================== CALLBACK HANDLERS ====================
 async def handle_page_navigation(call: types.CallbackQuery) -> None:
     """Sahifa navigatsiyasi"""
     try:
@@ -1027,6 +990,13 @@ async def main() -> None:
     """Async bot ishga tushirish"""
     global bot
     
+    # TeleBot versiyasini tekshirish
+    try:
+        telebot_version = version('pyTelegramBotAPI')
+        logger.info(f"📦 pyTelegramBotAPI versiyasi: {telebot_version}")
+    except:
+        pass
+    
     logger.info("=" * 60)
     logger.info("🎵 TELEGRAM MUSIC BOT - LINUX OPTIMIZED")
     logger.info("=" * 60)
@@ -1051,9 +1021,10 @@ async def main() -> None:
         logger.info("📱 Instagram, TikTok, Shazam, YouTube")
         logger.info("⚡ Async tezkor rejim")
         
+        # TO'G'RILANGAN POLLING - long_polling_timeout O'CHIRILDI
         await bot.infinity_polling(
             timeout=20,
-            long_polling_timeout=20
+            request_timeout=60
         )
     
     except KeyboardInterrupt:
@@ -1080,10 +1051,6 @@ async def main() -> None:
         logger.info("✅ Bot to'xtatildi")
 
 if __name__ == '__main__':
-    # Multiprocessing spawn method (Linux uchun optimal)
-    multiprocessing.set_start_method('spawn', force=True)
-    
-    # Run bot
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
