@@ -32,7 +32,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "8524502393:AAFvZmPd2VtjSPrw6TLQdJ9iojHYMlPsj_E"
+BOT_TOKEN = "8524502393:AAFw9V2Pg2MqrqhdLBh1Cb1md3CE7u1A0hk"
 TEMP_DIR = Path("temp")
 TEMP_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 50 * 1024 * 1024
